@@ -172,9 +172,61 @@ body { font-family: Arial, sans-serif; font-size:13px; background:#fff; color:#0
 #footer-location { text-align:center; color:#666; font-size:12px; margin-top:5px; }
 #footer-location a { color:#1a0dab; text-decoration:none; }
 #footer-location a:hover { text-decoration:underline; }
+
+/* ── API KEY MODAL ── */
+#key-overlay {
+  position:fixed; inset:0; background:rgba(0,0,0,.55);
+  display:flex; align-items:center; justify-content:center;
+  z-index:9999; font-family:Arial,sans-serif;
+}
+#key-box {
+  background:#fff; width:440px; padding:32px 36px 28px;
+  box-shadow:0 4px 20px rgba(0,0,0,.3);
+}
+#key-box h2 { font-size:20px; font-weight:normal; margin-bottom:6px; color:#222; }
+#key-box p  { font-size:13px; color:#555; margin-bottom:18px; line-height:1.6; }
+#key-box p a { color:#1a0dab; }
+#key-input {
+  width:100%; height:34px; border:1px solid #d9d9d9;
+  padding:0 10px; font-size:14px; font-family:Arial,sans-serif;
+  outline:none; margin-bottom:6px;
+}
+#key-input:focus { border-color:#4d90fe; box-shadow:0 0 3px rgba(66,133,244,.4); }
+#key-error { color:#c00; font-size:12px; margin-bottom:10px; min-height:16px; }
+#key-btns { display:flex; gap:10px; justify-content:flex-end; margin-top:14px; }
+#key-save {
+  background:#4d90fe; color:#fff; border:none;
+  padding:8px 22px; font-size:13px; cursor:pointer;
+  font-family:Arial,sans-serif;
+}
+#key-save:hover { background:#357ae8; }
+#key-change-btn {
+  color:#1a0dab; font-size:12px; cursor:pointer;
+  text-decoration:underline; background:none; border:none;
+  padding:0; font-family:Arial,sans-serif; margin-left:8px;
+}
 </style>
 </head>
 <body>
+
+<!-- ═══ API KEY MODAL ═══ -->
+<div id="key-overlay" style="display:none;">
+  <div id="key-box">
+    <h2>Enter your Gemini API Key</h2>
+    <p>
+      This site uses <strong>Google Gemini AI</strong> to generate search results.<br>
+      Your key is saved <strong>only in your browser</strong> — never sent to any server.<br><br>
+      Get a <strong>completely free</strong> key (no credit card) at:<br>
+      <a href="https://aistudio.google.com/app/apikey" target="_blank">aistudio.google.com/app/apikey</a><br><br>
+      Free tier: <strong>1,500 requests/day</strong> — plenty for personal use.
+    </p>
+    <input type="password" id="key-input" placeholder="AIza..." autocomplete="off" spellcheck="false">
+    <div id="key-error"></div>
+    <div id="key-btns">
+      <button id="key-save" onclick="saveKey()">Save &amp; Search</button>
+    </div>
+  </div>
+</div>
 
 <!-- ═══ HOMEPAGE ═══ -->
 <div id="homepage">
@@ -265,6 +317,7 @@ body { font-family: Arial, sans-serif; font-size:13px; background:#fff; color:#0
           <circle cx="15.5" cy="15.5" r="1.5" fill="#666"/>
         </svg>
         <a href="#" class="sign-in-btn">Sign in</a>
+        <button id="key-change-btn" onclick="changeKey()" title="Change Gemini API key">🔑 API Key</button>
       </div>
     </div>
     <div id="navbar">
@@ -306,6 +359,45 @@ body { font-family: Arial, sans-serif; font-size:13px; background:#fff; color:#0
 <script>
 let currentTab = 'web';
 let currentQuery = '';
+let pendingSearch = null; // search queued while waiting for API key
+
+/* ── API KEY MANAGEMENT ─────────────────────────── */
+function getKey() { return localStorage.getItem('gemini_key') || ''; }
+
+function requireKey(cb) {
+  if (getKey()) { cb(); return; }
+  pendingSearch = cb;
+  document.getElementById('key-input').value = '';
+  document.getElementById('key-error').textContent = '';
+  document.getElementById('key-overlay').style.display = 'flex';
+  setTimeout(() => document.getElementById('key-input').focus(), 50);
+}
+
+function saveKey() {
+  const val = document.getElementById('key-input').value.trim();
+  if (!val.startsWith('AIza')) {
+    document.getElementById('key-error').textContent = 'Gemini keys start with AIza — check and try again.';
+    return;
+  }
+  localStorage.setItem('gemini_key', val);
+  document.getElementById('key-overlay').style.display = 'none';
+  if (pendingSearch) { pendingSearch(); pendingSearch = null; }
+}
+
+function changeKey() {
+  localStorage.removeItem('gemini_key');
+  document.getElementById('key-input').value = '';
+  document.getElementById('key-error').textContent = '';
+  document.getElementById('key-overlay').style.display = 'flex';
+  setTimeout(() => document.getElementById('key-input').focus(), 50);
+}
+
+// Allow Enter key in the modal input
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('key-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter') saveKey();
+  });
+});
 
 /* ── NAVIGATION ─────────────────────────── */
 function showHomepage() {
@@ -377,39 +469,46 @@ No markdown, no code fences.`,
 No markdown, no code fences.`
   };
 
+  // Gate on API key — show modal if not set, then retry
+  if (!getKey()) {
+    document.getElementById('loading').classList.remove('active');
+    requireKey(() => doSearch(tab));
+    return;
+  }
+
   try {
-    // Use allorigins as CORS proxy to reach Anthropic API
     const payload = {
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 1500,
-      system: prompts[currentTab] || prompts.web,
-      messages: [{ role: 'user', content: 'Search query: "' + val + '"' }]
+      system: prompts[currentTab] || prompts.web
     };
 
-    // Try direct first (works in Claude artifacts), fall back to proxy for GitHub Pages
-    let text = '';
-    try {
-      const direct = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      if (direct.ok) {
-        const d = await direct.json();
-        text = (d.content?.[0]?.text || '');
-      } else { throw new Error('direct failed'); }
-    } catch(_) {
-      // CORS proxy fallback for GitHub Pages / static hosting
-      const proxyUrl = 'https://corsproxy.io/?' + encodeURIComponent('https://api.anthropic.com/v1/messages');
-      const proxied = await fetch(proxyUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-anthropic-version': '2023-06-01' },
-        body: JSON.stringify(payload)
-      });
-      const d = await proxied.json();
-      text = (d.content?.[0]?.text || '');
+    const geminiUrl = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' + getKey();
+
+    const r = await fetch(geminiUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{
+          parts: [{ text: payload.system + '\n\nSearch query: "' + val + '"' }]
+        }],
+        generationConfig: { temperature: 0.7, maxOutputTokens: 1500 }
+      })
+    });
+
+    if (r.status === 400 || r.status === 401 || r.status === 403) {
+      localStorage.removeItem('gemini_key');
+      document.getElementById('loading').classList.remove('active');
+      document.getElementById('key-error').textContent = 'Invalid API key. Get a free one at aistudio.google.com/app/apikey';
+      requireKey(() => doSearch(tab));
+      return;
     }
-    text = text.replace(/```json|```/g,'').trim();
+
+    if (!r.ok) {
+      const errText = await r.text();
+      throw new Error('API error ' + r.status + ': ' + errText);
+    }
+
+    const d = await r.json();
+    let text = (d.candidates?.[0]?.content?.parts?.[0]?.text || '').replace(/```json|```/g,'').trim();
     let parsed;
     try { parsed = JSON.parse(text); } catch(e) { parsed = null; }
 
@@ -417,6 +516,7 @@ No markdown, no code fences.`
 
     if (!parsed) {
       document.getElementById('no-results').style.display = 'block';
+      document.getElementById('no-results').textContent = 'Could not parse results. Try searching again.';
       return;
     }
 
